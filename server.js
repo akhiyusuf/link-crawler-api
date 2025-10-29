@@ -1,51 +1,61 @@
-const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const { URL } = require('url');
+import express from "express";
+import axios from "axios";
+import * as cheerio from "cheerio";
+import { URL } from "url";
 
 const app = express();
 app.use(express.json());
 
-async function crawlPage(url, depth, visited, results) {
-  if (depth <= 0 || visited.has(url)) return;
-  visited.add(url);
+async function fetchPage(url) {
+  const { data } = await axios.get(url, { timeout: 20000 });
+  const $ = cheerio.load(data);
+  const text = $("body").text().replace(/\s+/g, " ").trim();
+  const title = $("title").text() || "";
+  const links = [];
+  $("a").each((_, el) => {
+    const href = $(el).attr("href");
+    if (href && !href.startsWith("mailto:") && !href.startsWith("tel:")) {
+      try {
+        const abs = new URL(href, url).href;
+        links.push(abs);
+      } catch {}
+    }
+  });
+  const emails = [...new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])];
+  const phones = [...new Set(text.match(/(\+?\d[\d\s\-()]{6,}\d)/g) || [])]
+    .filter(n => n.length >= 8 && /\d{7,}/.test(n));
+
+  return { url, title, emails, phones, text: text.slice(0, 1000), links };
+}
+
+async function crawlSite(startUrl, depth, visited = new Set()) {
+  if (depth <= 0 || visited.has(startUrl)) return [];
+  visited.add(startUrl);
 
   try {
-    const response = await axios.get(url, { timeout: 20000 });
-    const html = response.data;
-    const $ = cheerio.load(html);
+    const pageData = await fetchPage(startUrl);
+    const childResults = [];
 
-    // Extract data
-    const emails = [...new Set(html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])];
-    const phones = [...new Set(html.match(/\+?\d[\d\s().-]{7,}/g) || [])];
-    const title = $('title').text().trim();
-    const links = $('a[href]')
-      .map((i, el) => new URL($(el).attr('href'), url).href)
-      .get()
-      .filter(href => href.startsWith(new URL(url).origin));
-
-    results.push({ url, title, emails, phones });
-
-    // Crawl sub-links recursively
-    for (const link of links.slice(0, 10)) {
-      await crawlPage(link, depth - 1, visited, results);
+    if (depth > 1) {
+      const sameDomainLinks = pageData.links.filter(link => link.startsWith(new URL(startUrl).origin));
+      for (const link of sameDomainLinks.slice(0, 10)) {
+        const children = await crawlSite(link, depth - 1, visited);
+        childResults.push(...children);
+      }
     }
 
-  } catch (err) {
-    console.error(`Error fetching ${url}: ${err.message}`);
+    return [pageData, ...childResults];
+  } catch {
+    return [];
   }
 }
 
-app.post('/crawl', async (req, res) => {
+app.post("/crawl", async (req, res) => {
   const { url, depth = 1 } = req.body;
-  if (!url) return res.status(400).json({ error: 'url required' });
+  if (!url) return res.status(400).json({ error: "Missing URL" });
 
-  const visited = new Set();
-  const results = [];
-
-  await crawlPage(url, depth, visited, results);
+  const results = await crawlSite(url, depth);
   res.json({ results });
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`✅ Crawler running on port ${port}`));
+app.listen(10000, () => console.log("Crawler running on port 10000"));
