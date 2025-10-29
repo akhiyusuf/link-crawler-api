@@ -288,20 +288,22 @@ async function fetchPage(url) {
     try { return new URL(href, url).href; } catch(e) { return null; }
   }).get().filter(Boolean);
 
-  const fullText = bodyText;
-  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, fullText, links };
+  const fullText = bodyText; // <-- Changed from snippet to fullText
+
+  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, fullText, links }; // <-- Changed snippet to fullText
 }
 
 // --- crawl logic with depth and maxPages ---
 async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode = null) {
   const origin = new URL(startUrl).origin;
   const visited = new Set();
-  const results = [];
+  const results = []; // <-- results is defined HERE
   const toVisit = [startUrl];
 
   while (toVisit.length && visited.size < maxPages) {
     const u = toVisit.shift();
     if (!u || visited.has(u)) continue;
+    
     try {
       const page = await fetchPage(u);
       const normalizedPhones = [];
@@ -317,12 +319,9 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
         metaDescription: page.metaDescription,
         emails: page.emails,
         phones: uniquePhones,
-        fullText: page.fullText,
-        links: page.links,
-        url: u,
-        error: err.message
+        fullText: page.fullText, // <-- Changed from snippet to fullText
+        links: page.links
       });
-
 
       visited.add(u);
 
@@ -334,7 +333,7 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
           if (!visited.has(l) && (toVisit.length + visited.size) < maxPages) toVisit.push(l);
         }
       }
-    } catch (err) {
+    } catch (err) { // <-- err is properly defined here in the catch block
       console.error('fetch failed', u, err.message);
       visited.add(u);
     }
@@ -342,13 +341,14 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
   return results;
 }
 
+
 // --- CSV with multiple email/phone columns ---
 function toCSV(rows, emailCols = 5, phoneCols = 5) {
   const header = ['url','title','metaDescription'];
   for (let i=1;i<=emailCols;i++) header.push(`email_${i}`);
   for (let i=1;i<=phoneCols;i++) header.push(`phone_${i}`);
-  header.push('fullText');
-  for (let i=1;i<=3;i++) header.push(`link_${i}`); // keep first 3 links in columns (others remain in JSON if needed)
+  header.push('fullText'); // <-- Changed from snippet
+  for (let i=1;i<=3;i++) header.push(`link_${i}`);
   const out = [header.join(',')];
 
   for (const r of rows) {
@@ -358,12 +358,12 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
     row.push(`"${(r.metaDescription||'').replace(/"/g,'""')}"`);
 
     const emails = r.emails || [];
-    for (let i=0;i<emailCols;i++) row.push(`"${(emails[i]||'') .replace(/"/g,'""')}"`);
+    for (let i=0;i<emailCols;i++) row.push(`"${(emails[i]||'').replace(/"/g,'""')}"`);
 
     const phones = r.phones || [];
-    for (let i=0;i<phoneCols;i++) row.push(`"${(phones[i]||'') .replace(/"/g,'""')}"`);
+    for (let i=0;i<phoneCols;i++) row.push(`"${(phones[i]||'').replace(/"/g,'""')}"`);
 
-    row.push(`"${(r.fullText||'').replace(/"/g,'""')}"`);
+    row.push(`"${(r.fullText||'').replace(/"/g,'""')}"`); // <-- Changed from snippet
 
     const links = r.links || [];
     for (let i=0;i<3;i++) row.push(`"${(links[i]||'').replace(/"/g,'""')}"`);
@@ -372,6 +372,7 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   }
   return out.join('\n');
 }
+
 
 // --- API ---
 app.post('/crawl', async (req, res) => {
