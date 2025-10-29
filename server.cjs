@@ -398,3 +398,5 @@ app.post('/crawl', async (req, res) => {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Crawler running on port ${port}`));
+
+results.push({ url: u, error: err.message });
