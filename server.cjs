@@ -519,41 +519,53 @@ app.post('/google-search', async (req, res) => {
     if (!query) return res.status(400).json({ error: 'query required' });
 
     const maxResults = Math.min(50, Math.max(1, parseInt(limit) || 10));
-    const encodedQuery = encodeURIComponent(query);
-
-    // Use DuckDuckGo HTML search for simplicity (no API key required)
-    const searchURL = `https://html.duckduckgo.com/?q=${encodedQuery}`;
-
-    const response = await axios.get(searchURL, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-      timeout: 10000
-    });
-
-    const $ = cheerio.load(response.data);
-    const results = [];
-
-    // Extract results from DuckDuckGo HTML
-    $('a.result__a').each((i, el) => {
-      if (results.length >= maxResults) return false;
-      results.push({
-        title: $(el).text().trim(),
-        url: $(el).attr('href'),
-        snippet: '', // DuckDuckGo HTML doesn't always include snippet
-        type: 'web'
-      });
-    });
-
-    // Optionally filter by type (basic)
-    let filteredResults = results;
-    if (type === 'news') {
-      filteredResults = results.filter(r => r.title.toLowerCase().includes('news'));
-    } else if (type === 'shopping') {
-      filteredResults = results.filter(r => r.title.toLowerCase().includes('buy') || r.title.toLowerCase().includes('price'));
+    
+    // Try Google API first if configured
+    let results = [];
+    let engine = 'none';
+    
+    if (process.env.GOOGLE_API_KEY && process.env.GOOGLE_SEARCH_ENGINE_ID) {
+      try {
+        console.log(`Attempting Google API search for: ${query}`);
+        results = await searchGoogle(query, maxResults, process.env.GOOGLE_API_KEY, process.env.GOOGLE_SEARCH_ENGINE_ID);
+        engine = 'google';
+        console.log(`Google API returned ${results.length} results`);
+      } catch (err) {
+        console.error('Google API failed, falling back to DuckDuckGo:', err.message);
+        results = await searchDuckDuckGo(query, maxResults);
+        engine = 'duckduckgo';
+      }
+    } else {
+      console.warn('Google API keys not configured, using DuckDuckGo');
+      results = await searchDuckDuckGo(query, maxResults);
+      engine = 'duckduckgo';
     }
 
-    res.json({ results: filteredResults.slice(0, maxResults), count: filteredResults.length, searchType: type });
+    // Filter by type if needed
+    let filteredResults = results;
+    if (type === 'news') {
+      filteredResults = results.filter(r => 
+        r.title.toLowerCase().includes('news') || 
+        r.url.toLowerCase().includes('news')
+      );
+    } else if (type === 'shopping') {
+      filteredResults = results.filter(r => 
+        r.title.toLowerCase().includes('buy') || 
+        r.title.toLowerCase().includes('price') ||
+        r.title.toLowerCase().includes('shop') ||
+        r.url.toLowerCase().includes('shop')
+      );
+    }
+
+    res.json({ 
+      results: filteredResults.slice(0, maxResults), 
+      count: filteredResults.length, 
+      searchType: type,
+      engine: engine,
+      message: engine === 'none' ? 'No results found' : undefined
+    });
   } catch (err) {
-    console.error('Google search failed:', err.message);
+    console.error('Google search endpoint error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
