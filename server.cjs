@@ -1,4 +1,4 @@
-// server.cjs (CommonJS)
+// server.cjs (Enhanced with Search + Crawl)
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -7,7 +7,7 @@ const { URL } = require('url');
 const app = express();
 app.use(express.json());
 
-// --- small countryRules mapping (extendable) ---
+// --- countryRules mapping ---
 const countryRules = {
   "1": {min: 7, max: 10}, // NANP (US, Canada, Caribbean)
   "7": {min: 10, max: 10}, // Kazakhstan, Russia
@@ -212,6 +212,7 @@ const countryRules = {
   "996": {min: 9, max: 9}, // Kyrgyzstan
   "998": {min: 9, max: 9}, // Uzbekistan
 };
+
 const knownCountryCodes = Object.keys(countryRules).sort((a,b) => b.length - a.length);
 
 // --- helpers ---
@@ -268,9 +269,75 @@ function normalizeToE164(raw, defaultCountryCode=null) {
   return null;
 }
 
+// --- NEW: Search DuckDuckGo for businesses ---
+async function searchDuckDuckGo(query, limit = 5) {
+  try {
+    const encodedQuery = encodeURIComponent(query);
+    const url = `https://html.duckduckgo.com/?q=${encodedQuery}`;
+    
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    
+    const $ = cheerio.load(res.data);
+    const results = [];
+    
+    $('a.result__url').each((i, el) => {
+      if (results.length >= limit) return false;
+      const href = $(el).attr('href');
+      if (href && !href.includes('duckduckgo.com')) {
+        results.push({ url: href, source: 'duckduckgo' });
+      }
+    });
+    
+    return results;
+  } catch (err) {
+    console.error('DuckDuckGo search failed:', err.message);
+    return [];
+  }
+}
+
+// --- NEW: Search Google for businesses (requires API key) ---
+async function searchGoogle(query, limit = 5, googleAPIKey = null, googleSearchEngineId = null) {
+  if (!googleAPIKey || !googleSearchEngineId) {
+    console.warn('Google API keys not configured. Skipping Google search.');
+    return [];
+  }
+  
+  try {
+    const url = 'https://www.googleapis.com/customsearch/v1';
+    const res = await axios.get(url, {
+      params: {
+        q: query,
+        key: googleAPIKey,
+        cx: googleSearchEngineId,
+        num: Math.min(limit, 10)
+      },
+      timeout: 10000
+    });
+    
+    const results = [];
+    if (res.data.items) {
+      for (const item of res.data.items) {
+        if (results.length >= limit) break;
+        results.push({ url: item.link, title: item.title, source: 'google' });
+      }
+    }
+    
+    return results;
+  } catch (err) {
+    console.error('Google search failed:', err.message);
+    return [];
+  }
+}
+
 // --- fetch + parse page ---
 async function fetchPage(url) {
-  const res = await axios.get(url, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (crawler)' } });
+  const res = await axios.get(url, { 
+    timeout: 20000, 
+    headers: { 'User-Agent': 'Mozilla/5.0 (crawler)' } 
+  });
   const $ = cheerio.load(res.data || '');
   const bodyText = $('body').text().replace(/\s+/g,' ').trim();
   const title = ($('title').text()||'').trim();
@@ -288,16 +355,16 @@ async function fetchPage(url) {
     try { return new URL(href, url).href; } catch(e) { return null; }
   }).get().filter(Boolean);
 
-  const fullText = bodyText; // <-- Changed from snippet to fullText
+  const fullText = bodyText;
 
-  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, fullText, links }; // <-- Changed snippet to fullText
+  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, fullText, links };
 }
 
-// --- crawl logic with depth and maxPages ---
+// --- crawl logic ---
 async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode = null) {
   const origin = new URL(startUrl).origin;
   const visited = new Set();
-  const results = []; // <-- results is defined HERE
+  const results = [];
   const toVisit = [startUrl];
 
   while (toVisit.length && visited.size < maxPages) {
@@ -319,7 +386,7 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
         metaDescription: page.metaDescription,
         emails: page.emails,
         phones: uniquePhones,
-        fullText: page.fullText, // <-- Changed from snippet to fullText
+        fullText: page.fullText,
         links: page.links
       });
 
@@ -333,7 +400,7 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
           if (!visited.has(l) && (toVisit.length + visited.size) < maxPages) toVisit.push(l);
         }
       }
-    } catch (err) { // <-- err is properly defined here in the catch block
+    } catch (err) {
       console.error('fetch failed', u, err.message);
       visited.add(u);
     }
@@ -341,19 +408,19 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
   return results;
 }
 
-
-// --- CSV with multiple email/phone columns ---
+// --- CSV export ---
 function toCSV(rows, emailCols = 5, phoneCols = 5) {
-  const header = ['url','title','metaDescription'];
+  const header = ['businessName','url','title','metaDescription'];
   for (let i=1;i<=emailCols;i++) header.push(`email_${i}`);
   for (let i=1;i<=phoneCols;i++) header.push(`phone_${i}`);
-  header.push('fullText'); // <-- Changed from snippet
+  header.push('fullText');
   for (let i=1;i<=3;i++) header.push(`link_${i}`);
   const out = [header.join(',')];
 
   for (const r of rows) {
     const row = [];
-    row.push(`"${r.url.replace(/"/g,'""')}"`);
+    row.push(`"${(r.businessName||'').replace(/"/g,'""')}"`);
+    row.push(`"${(r.url||'').replace(/"/g,'""')}"`);
     row.push(`"${(r.title||'').replace(/"/g,'""')}"`);
     row.push(`"${(r.metaDescription||'').replace(/"/g,'""')}"`);
 
@@ -363,7 +430,7 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
     const phones = r.phones || [];
     for (let i=0;i<phoneCols;i++) row.push(`"${(phones[i]||'').replace(/"/g,'""')}"`);
 
-    row.push(`"${(r.fullText||'').replace(/"/g,'""')}"`); // <-- Changed from snippet
+    row.push(`"${(r.fullText||'').substring(0, 500).replace(/"/g,'""')}"`);
 
     const links = r.links || [];
     for (let i=0;i<3;i++) row.push(`"${(links[i]||'').replace(/"/g,'""')}"`);
@@ -373,8 +440,9 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   return out.join('\n');
 }
 
+// --- API ENDPOINTS ---
 
-// --- API ---
+// Endpoint 1: Crawl a specific URL (original)
 app.post('/crawl', async (req, res) => {
   try {
     const { url, depth = 1, maxPages = 10, format = 'json', defaultCountryCode = null, emailColumns = 5, phoneColumns = 5 } = req.body;
@@ -394,6 +462,82 @@ app.post('/crawl', async (req, res) => {
     } else {
       res.json({ results });
     }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint 2: Search + Crawl (NEW)
+app.post('/search-and-crawl', async (req, res) => {
+  try {
+    const {
+      query,
+      searchEngine = 'duckduckgo',
+      limit = 3,
+      crawlDepth = 1,
+      crawlMaxPages = 5,
+      format = 'json'
+    } = req.body;
+
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    // Step 1: Search for businesses
+    let searchResults = [];
+    if (searchEngine === 'google') {
+      searchResults = await searchGoogle(query, limit, process.env.GOOGLE_API_KEY, process.env.GOOGLE_SEARCH_ENGINE_ID);
+    } else {
+      searchResults = await searchDuckDuckGo(query, limit);
+    }
+
+    if (searchResults.length === 0) {
+      return res.json({ results: [], message: 'No search results found' });
+    }
+
+    // Step 2: Crawl each result
+    const allResults = [];
+    for (const searchResult of searchResults) {
+      try {
+        const crawlResults = await crawlSite(searchResult.url, crawlDepth, crawlMaxPages);
+        for (const crawlResult of crawlResults) {
+          allResults.push({
+            ...crawlResult,
+            businessName: searchResult.title || searchResult.url,
+            searchSource: searchResult.source
+          });
+        }
+      } catch (err) {
+        console.error('Failed to crawl', searchResult.url, err.message);
+      }
+    }
+
+    if (format === 'csv') {
+      const csv = toCSV(allResults);
+      res.setHeader('Content-Type', 'text/csv');
+      res.send(csv);
+    } else {
+      res.json({ results: allResults, searchCount: searchResults.length });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint 3: Search only (returns URLs without crawling)
+app.post('/search', async (req, res) => {
+  try {
+    const { query, searchEngine = 'duckduckgo', limit = 10 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    let results = [];
+    if (searchEngine === 'google') {
+      results = await searchGoogle(query, limit, process.env.GOOGLE_API_KEY, process.env.GOOGLE_SEARCH_ENGINE_ID);
+    } else {
+      results = await searchDuckDuckGo(query, limit);
+    }
+
+    res.json({ results, count: results.length });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
