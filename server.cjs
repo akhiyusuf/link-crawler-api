@@ -440,6 +440,10 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   return out.join('\n');
 }
 
+
+// --- API ENDPOINTS ---
+
+
 // --- NEW: Google Search Endpoint ---
 // Use for: general web, news, shopping search
 app.post('/google-search', async (req, res) => {
@@ -486,9 +490,6 @@ app.post('/google-search', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-
-// --- API ENDPOINTS ---
 
 // Endpoint 1: Crawl a specific URL (original)
 app.post('/crawl', async (req, res) => {
