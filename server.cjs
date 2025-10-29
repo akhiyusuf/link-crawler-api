@@ -440,8 +440,75 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   return out.join('\n');
 }
 
+async function searchGoogleMaps(query, limit = 5, apiKey) {
+  try {
+    if (!apiKey) {
+      console.warn('Google Maps API key missing. Skipping Google Maps search.');
+      return [];
+    }
+    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json`;
+    const params = {
+      query,
+      key: apiKey,
+      type: 'establishment',
+      language: 'en',
+      radius: 50000,
+    };
+    const response = await axios.get(url, { params, timeout: 10000 });
+    const places = response.data.results || [];
+    const results = [];
+    for (const place of places) {
+      if (results.length >= limit) break;
+      results.push({
+        name: place.name,
+        address: place.formatted_address,
+        place_id: place.place_id,
+        website: place.website || null,
+        googleMapsUrl: place.url,
+        location: place.geometry.location,
+      });
+    }
+    for (const r of results) {
+      if (!r.website) {
+        const detailsURL = `https://maps.googleapis.com/maps/api/place/details/json`;
+        const detailsParams = { place_id: r.place_id, key: apiKey, fields: 'website' };
+        try {
+          const detailsResp = await axios.get(detailsURL, { params: detailsParams });
+          r.website = detailsResp.data.result?.website || null;
+        } catch {}
+      }
+    }
+    return results;
+  } catch (err) {
+    console.error('Google Maps search failed:', err.message);
+    return [];
+  }
+}
+
+
 
 // --- API ENDPOINTS ---
+
+
+
+// Use for: buisness searches on google maps
+app.post('/google-maps-search', async (req, res) => {
+  try {
+    const { query, limit = 5 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    const numericLimit = Math.min(20, Math.max(1, parseInt(limit) || 5));
+    // Use your Google Maps API Key from environment variables
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+
+    const results = await searchGoogleMaps(query, numericLimit, apiKey);
+
+    res.json({ results, count: results.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 // --- NEW: Google Search Endpoint ---
