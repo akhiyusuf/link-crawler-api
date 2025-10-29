@@ -1,9 +1,9 @@
 {
   "name": "link-crawler-api",
   "version": "1.0.0",
+  "type": "module",
   "description": "A free multi-link crawler that extracts emails and phone numbers",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js"
   },
