@@ -440,6 +440,54 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   return out.join('\n');
 }
 
+// --- NEW: Google Search Endpoint ---
+// Use for: general web, news, shopping search
+app.post('/google-search', async (req, res) => {
+  try {
+    const { query, limit = 10, type = 'all' } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    const maxResults = Math.min(50, Math.max(1, parseInt(limit) || 10));
+    const encodedQuery = encodeURIComponent(query);
+
+    // Use DuckDuckGo HTML search for simplicity (no API key required)
+    const searchURL = `https://html.duckduckgo.com/?q=${encodedQuery}`;
+
+    const response = await axios.get(searchURL, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      timeout: 10000
+    });
+
+    const $ = cheerio.load(response.data);
+    const results = [];
+
+    // Extract results from DuckDuckGo HTML
+    $('a.result__a').each((i, el) => {
+      if (results.length >= maxResults) return false;
+      results.push({
+        title: $(el).text().trim(),
+        url: $(el).attr('href'),
+        snippet: '', // DuckDuckGo HTML doesn't always include snippet
+        type: 'web'
+      });
+    });
+
+    // Optionally filter by type (basic)
+    let filteredResults = results;
+    if (type === 'news') {
+      filteredResults = results.filter(r => r.title.toLowerCase().includes('news'));
+    } else if (type === 'shopping') {
+      filteredResults = results.filter(r => r.title.toLowerCase().includes('buy') || r.title.toLowerCase().includes('price'));
+    }
+
+    res.json({ results: filteredResults.slice(0, maxResults), count: filteredResults.length, searchType: type });
+  } catch (err) {
+    console.error('Google search failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // --- API ENDPOINTS ---
 
 // Endpoint 1: Crawl a specific URL (original)
