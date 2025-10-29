@@ -1,24 +1,9 @@
-# 1) ensure we're on main and up-to-date
-git checkout main
-git pull origin main
-
-# 2) show current files so you can confirm where you are
-echo "FILES IN REPO:"
-ls -la
-
-# 3) If you only have server.js, rename it to server.cjs (we expect server.cjs)
-if [ -f server.js ] && [ ! -f server.cjs ]; then
-  git mv server.js server.cjs
-  echo "Renamed server.js -> server.cjs"
-fi
-
-# 4) Overwrite package.json with a valid JSON (this will replace any accidental shell text)
-cat > package.json <<'JSON'
 {
   "name": "link-crawler-api",
   "version": "1.0.0",
   "description": "Multi-link crawler with CSV columns for emails & phones",
   "main": "server.cjs",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.cjs"
   },
@@ -26,14 +11,8 @@ cat > package.json <<'JSON'
     "axios": "^1.7.4",
     "cheerio": "^1.0.0-rc.12",
     "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
-JSON
-
-# 5) Stage and commit only the changed files (package.json and server file if renamed)
-git add package.json
-if git ls-files --error-unmatch server.cjs >/dev/null 2>&1; then git add server.cjs || true; fi
-
-# 6) Commit and push
-git commit -m "Fix package.json (valid JSON) and ensure start runs server.cjs" || { echo "Nothing to commit"; }
-git push origin main
