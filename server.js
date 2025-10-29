@@ -1,4 +1,4 @@
-// server.js (CommonJS)
+// server.cjs (CommonJS)
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -7,11 +7,7 @@ const { URL } = require('url');
 const app = express();
 app.use(express.json());
 
-// ---------------------------
-// Minimal country-code map
-// (best-effort list for detection; extendable)
-// Values are {min,max} digits for national number length
-// ---------------------------
+// --- small countryRules mapping (extendable) ---
 const countryRules = {
   "1": {min: 7, max: 10}, // NANP (US, Canada, Caribbean)
   "7": {min: 10, max: 10}, // Kazakhstan, Russia
@@ -216,162 +212,103 @@ const countryRules = {
   "996": {min: 9, max: 9}, // Kyrgyzstan
   "998": {min: 9, max: 9}, // Uzbekistan
 };
-
-// Build list of known country codes for quick match (1-3 digits)
 const knownCountryCodes = Object.keys(countryRules).sort((a,b) => b.length - a.length);
 
-// ---------------------------
-// PHONE NORMALIZATION & VALIDATION
-// ---------------------------
+// --- helpers ---
 function cleanNumber(raw) {
   if (!raw || typeof raw !== 'string') return null;
-  // remove common extension markers (keep them out)
   raw = raw.split(/ext|extension|x|#|ext\./i)[0];
-  // remove "tel:" and spaces/dots/dashes/parentheses
   raw = raw.replace(/^tel:/i, '').trim();
   raw = raw.replace(/[()\s.\-]+/g, '');
-  // convert leading 00 to +
   if (raw.startsWith('00')) raw = '+' + raw.slice(2);
   if (raw.startsWith('+')) return '+' + raw.slice(1).replace(/\D/g, '');
-  // if it starts with digits and length looks like international with leading country code
-  if (/^\d+$/.test(raw)) return raw; // we'll try to interpret later
-  // fallback: remove non-digit but preserve leading +
+  if (/^\d+$/.test(raw)) return raw;
   return raw.replace(/[^\d+]/g, '');
+}
+
+function detectCountryCode(digits) {
+  for (const cc of knownCountryCodes) if (digits.startsWith(cc)) return cc;
+  return null;
 }
 
 function normalizeToE164(raw, defaultCountryCode=null) {
   let cleaned = cleanNumber(raw);
   if (!cleaned) return null;
-  // If already starts with +, check length and return
+
   if (cleaned.startsWith('+')) {
     const digits = cleaned.slice(1);
-    if (digits.length > 0 && digits.length <= 15 && /^\d+$/.test(digits)) {
-      // optional country-specific check
-      const cc = detectCountryCode(digits);
-      if (!cc) return '+' + digits; // fallback accept
-      const national = digits.slice(cc.length);
-      const rule = countryRules[cc];
-      if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
-        return '+' + digits;
-      } else {
-        // still return if within E.164 total length
-        if (digits.length <= 15) return '+' + digits;
-        return null;
-      }
-    }
+    if (!/^\d+$/.test(digits) || digits.length > 15) return null;
+    const cc = detectCountryCode(digits);
+    if (!cc) return '+'+digits;
+    const national = digits.slice(cc.length);
+    const rule = countryRules[cc];
+    if (!rule || (national.length >= rule.min && national.length <= rule.max)) return '+'+digits;
+    if (digits.length <= 15) return '+'+digits;
     return null;
   }
 
-  // If not starting with +, try 00 replaced earlier; then try detect country code from start
-  let digits = cleaned;
-  if (!/^\d+$/.test(digits)) return null;
-
-  // Try to find a 1-3 digit country code by testing known codes
+  if (!/^\d+$/.test(cleaned)) return null;
+  const digits = cleaned;
   for (const cc of knownCountryCodes) {
     if (digits.startsWith(cc)) {
       const national = digits.slice(cc.length);
       const rule = countryRules[cc];
-      if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
-        return '+' + cc + national;
-      } else {
-        // Not match rule but still might be valid under E.164
-        if ((cc + national).length <= 15) return '+' + cc + national;
-      }
+      if (!rule || (national.length >= rule.min && national.length <= rule.max)) return '+'+cc+national;
+      if ((cc+national).length <= 15) return '+'+cc+national;
     }
   }
 
-  // as fallback: if defaultCountryCode provided, use it
   if (defaultCountryCode) {
     const dd = defaultCountryCode.replace(/^\+/, '');
-    const national = digits;
     const rule = countryRules[dd];
-    if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
-      return '+' + dd + national;
-    } else if ((dd + national).length <= 15) {
-      return '+' + dd + national;
-    }
-  }
-
-  // last fallback: if digits length between 8 and 15, assume E.164 without leading plus is missing country code -> reject
-  if (digits.length >= 8 && digits.length <= 15) {
-    return null; // we refuse ambiguous numbers without explicit country code
+    if (!rule || (digits.length >= rule.min && digits.length <= rule.max)) return '+'+dd+digits;
+    if ((dd+digits).length <= 15) return '+'+dd+digits;
   }
 
   return null;
 }
 
-function detectCountryCode(digits) {
-  // digits: string of digits (no plus)
-  for (const cc of knownCountryCodes) {
-    if (digits.startsWith(cc)) return cc;
-  }
-  return null;
-}
-
-// ---------------------------
-// CRAWLER LOGIC
-// ---------------------------
+// --- fetch + parse page ---
 async function fetchPage(url) {
-  const { data } = await axios.get(url, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (crawler)' } });
-  const $ = cheerio.load(data);
-  const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
-  const title = ($('title').text() || '').trim();
-  const metaDesc = ($('meta[name="description"]').attr('content') || '').trim();
+  const res = await axios.get(url, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (crawler)' } });
+  const $ = cheerio.load(res.data || '');
+  const bodyText = $('body').text().replace(/\s+/g,' ').trim();
+  const title = ($('title').text()||'').trim();
+  const meta = ($('meta[name="description"]').attr('content')||'').trim();
 
-  // Raw emails using regex on the entire HTML and visible text
   const html = $.html();
   const emailsInHtml = [...new Set((html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).map(e => e.toLowerCase()))];
 
-  // Phone candidate extraction from text and tel: links
-  // capture tel: URIs
-  const telLinks = $('a[href^="tel:"]').map((i, a) => $(a).attr('href').replace(/^tel:/i, '')).get();
-  // fuzzy phone matches in visible text
+  const telLinks = $('a[href^="tel:"]').map((i,a) => $(a).attr('href').replace(/^tel:/i,'')).get();
   const fuzzyPhones = Array.from(new Set((bodyText.match(/(\+?\d[\d\-\s().]{6,}\d)/g) || []).map(s => s.trim())));
   const phoneCandidates = [...new Set([...telLinks, ...fuzzyPhones])];
 
-  // Links: absolute URLs for same-origin detection outside
-  const links = $('a[href]').map((i, el) => {
+  const links = $('a[href]').map((i,el) => {
     const href = $(el).attr('href');
-    try {
-      return new URL(href, url).href;
-    } catch (e) {
-      return null;
-    }
+    try { return new URL(href, url).href; } catch(e) { return null; }
   }).get().filter(Boolean);
 
-  // Keep first visible text snippet (for context)
-  const snippet = bodyText.slice(0, 1200);
-
-  return {
-    url,
-    title,
-    metaDescription: metaDesc,
-    emails: emailsInHtml,
-    phoneCandidates,
-    snippet,
-    links
-  };
+  const snippet = bodyText.slice(0,1200);
+  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, snippet, links };
 }
 
-// Crawl same-domain pages up to maxPages
+// --- crawl logic with depth and maxPages ---
 async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode = null) {
   const origin = new URL(startUrl).origin;
   const visited = new Set();
   const results = [];
-
   const toVisit = [startUrl];
-  while (toVisit.length > 0 && visited.size < maxPages) {
+
+  while (toVisit.length && visited.size < maxPages) {
     const u = toVisit.shift();
     if (!u || visited.has(u)) continue;
     try {
       const page = await fetchPage(u);
-      // Normalize phones
       const normalizedPhones = [];
       for (const p of page.phoneCandidates) {
         const norm = normalizeToE164(p, defaultCountryCode);
         if (norm) normalizedPhones.push(norm);
       }
-      // Dedup normalized phones
       const uniquePhones = [...new Set(normalizedPhones)];
 
       results.push({
@@ -386,65 +323,68 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
 
       visited.add(u);
 
-      // If depth > 1, and we haven't exceeded maxPages, enqueue same-origin links
       if (depth > 1) {
         const sameOriginLinks = page.links.filter(l => {
           try { return new URL(l).origin === origin; } catch { return false; }
         });
         for (const l of sameOriginLinks) {
-          if (!visited.has(l) && toVisit.length + visited.size < maxPages) {
-            toVisit.push(l);
-          }
+          if (!visited.has(l) && (toVisit.length + visited.size) < maxPages) toVisit.push(l);
         }
       }
     } catch (err) {
-      console.error(`Fetch failed for ${u}: ${err.message}`);
+      console.error('fetch failed', u, err.message);
       visited.add(u);
     }
   }
   return results;
 }
 
-// ---------------------------
-// CSV helper (columns)
-// ---------------------------
-function toCSV(rows) {
-  // columns: url,title,metaDescription,emails,phones,snippet,links
-  const header = ['url','title','metaDescription','emails','phones','snippet','links'];
-  const lines = [header.join(',')];
+// --- CSV with multiple email/phone columns ---
+function toCSV(rows, emailCols = 5, phoneCols = 5) {
+  const header = ['url','title','metaDescription'];
+  for (let i=1;i<=emailCols;i++) header.push(`email_${i}`);
+  for (let i=1;i<=phoneCols;i++) header.push(`phone_${i}`);
+  header.push('snippet');
+  for (let i=1;i<=3;i++) header.push(`link_${i}`); // keep first 3 links in columns (others remain in JSON if needed)
+  const out = [header.join(',')];
+
   for (const r of rows) {
-    const emails = (r.emails || []).join(' | ').replace(/"/g,"\"");
-    const phones = (r.phones || []).join(' | ').replace(/"/g,"\"");
-    const snippet = (r.snippet || '').replace(/\n/g,' ').replace(/"/g,'\"');
-    const links = (r.links || []).join(' | ').replace(/"/g,'\"');
-    const row = [
-      `"${r.url.replace(/"/g,'\"')}"`,
-      `"${(r.title||'').replace(/"/g,'\"')}"`,
-      `"${(r.metaDescription||'').replace(/"/g,'\"')}"`,
-      `"${emails}"`,
-      `"${phones}"`,
-      `"${snippet}"`,
-      `"${links}"`
-    ].join(',');
-    lines.push(row);
+    const row = [];
+    row.push(`"${r.url.replace(/"/g,'""')}"`);
+    row.push(`"${(r.title||'').replace(/"/g,'""')}"`);
+    row.push(`"${(r.metaDescription||'').replace(/"/g,'""')}"`);
+
+    const emails = r.emails || [];
+    for (let i=0;i<emailCols;i++) row.push(`"${(emails[i]||'') .replace(/"/g,'""')}"`);
+
+    const phones = r.phones || [];
+    for (let i=0;i<phoneCols;i++) row.push(`"${(phones[i]||'') .replace(/"/g,'""')}"`);
+
+    row.push(`"${(r.snippet||'').replace(/"/g,'""')}"`);
+
+    const links = r.links || [];
+    for (let i=0;i<3;i++) row.push(`"${(links[i]||'').replace(/"/g,'""')}"`);
+
+    out.push(row.join(','));
   }
-  return lines.join('\n');
+  return out.join('\n');
 }
 
-// ---------------------------
-// API endpoint
-// ---------------------------
+// --- API ---
 app.post('/crawl', async (req, res) => {
   try {
-    const { url, depth = 1, maxPages = 10, format = 'json', defaultCountryCode = null } = req.body;
+    const { url, depth = 1, maxPages = 10, format = 'json', defaultCountryCode = null, emailColumns = 5, phoneColumns = 5 } = req.body;
     if (!url) return res.status(400).json({ error: 'url required' });
-    const numericDepth = parseInt(depth) || 1;
-    const numericMax = Math.min(100, Math.max(1, parseInt(maxPages) || 10)); // safety limits
+
+    const numericDepth = Math.max(1, parseInt(depth) || 1);
+    const numericMax = Math.min(500, Math.max(1, parseInt(maxPages) || 10));
+    const eCols = Math.min(20, Math.max(1, parseInt(emailColumns)||5));
+    const pCols = Math.min(20, Math.max(1, parseInt(phoneColumns)||5));
 
     const results = await crawlSite(url, numericDepth, numericMax, defaultCountryCode);
 
     if (format === 'csv') {
-      const csv = toCSV(results);
+      const csv = toCSV(results, eCols, pCols);
       res.setHeader('Content-Type', 'text/csv');
       res.send(csv);
     } else {
