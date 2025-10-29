@@ -1,61 +1,460 @@
-import express from "express";
-import axios from "axios";
-import * as cheerio from "cheerio";
-import { URL } from "url";
+// server.js (CommonJS)
+const express = require('express');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { URL } = require('url');
 
 const app = express();
 app.use(express.json());
 
-async function fetchPage(url) {
-  const { data } = await axios.get(url, { timeout: 20000 });
-  const $ = cheerio.load(data);
-  const text = $("body").text().replace(/\s+/g, " ").trim();
-  const title = $("title").text() || "";
-  const links = [];
-  $("a").each((_, el) => {
-    const href = $(el).attr("href");
-    if (href && !href.startsWith("mailto:") && !href.startsWith("tel:")) {
-      try {
-        const abs = new URL(href, url).href;
-        links.push(abs);
-      } catch {}
-    }
-  });
-  const emails = [...new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])];
-  const phones = [...new Set(text.match(/(\+?\d[\d\s\-()]{6,}\d)/g) || [])]
-    .filter(n => n.length >= 8 && /\d{7,}/.test(n));
+// ---------------------------
+// Minimal country-code map
+// (best-effort list for detection; extendable)
+// Values are {min,max} digits for national number length
+// ---------------------------
+const countryRules = {
+  "1": {min: 7, max: 10}, // NANP (US, Canada, Caribbean)
+  "7": {min: 10, max: 10}, // Kazakhstan, Russia
+  "20": {min: 7, max: 9}, // Egypt
+  "27": {min: 9, max: 9}, // South Africa
+  "30": {min: 10, max: 10}, // Greece
+  "31": {min: 9, max: 9}, // Netherlands
+  "32": {min: 8, max: 9}, // Belgium
+  "33": {min: 9, max: 9}, // France
+  "34": {min: 9, max: 9}, // Spain
+  "36": {min: 8, max: 9}, // Hungary
+  "39": {min: 6, max: 11}, // Italy, Vatican City
+  "40": {min: 9, max: 9}, // Romania
+  "41": {min: 4, max: 12}, // Switzerland
+  "43": {min: 4, max: 13}, // Austria
+  "44": {min: 7, max: 10}, // United Kingdom
+  "45": {min: 8, max: 8}, // Denmark
+  "46": {min: 7, max: 13}, // Sweden
+  "47": {min: 5, max: 8}, // Norway
+  "48": {min: 9, max: 9}, // Poland
+  "49": {min: 6, max: 13}, // Germany
+  "51": {min: 8, max: 11}, // Peru
+  "52": {min: 10, max: 10}, // Mexico
+  "53": {min: 6, max: 8}, // Cuba
+  "54": {min: 10, max: 10}, // Argentina
+  "55": {min: 10, max: 10}, // Brazil
+  "56": {min: 8, max: 9}, // Chile
+  "57": {min: 8, max: 10}, // Colombia
+  "58": {min: 10, max: 10}, // Venezuela
+  "60": {min: 7, max: 9}, // Malaysia
+  "61": {min: 5, max: 15}, // Australia
+  "62": {min: 5, max: 10}, // Indonesia
+  "63": {min: 8, max: 10}, // Philippines
+  "64": {min: 3, max: 10}, // New Zealand
+  "65": {min: 8, max: 12}, // Singapore
+  "66": {min: 8, max: 9}, // Thailand
+  "81": {min: 5, max: 13}, // Japan
+  "82": {min: 8, max: 11}, // South Korea
+  "84": {min: 7, max: 10}, // Vietnam
+  "86": {min: 5, max: 12}, // China
+  "90": {min: 10, max: 10}, // Turkey
+  "91": {min: 7, max: 10}, // India
+  "92": {min: 8, max: 11}, // Pakistan
+  "93": {min: 9, max: 9}, // Afghanistan
+  "94": {min: 9, max: 9}, // Sri Lanka
+  "95": {min: 7, max: 9}, // Myanmar
+  "98": {min: 6, max: 10}, // Iran
+  "211": {min: 9, max: 9}, // South Sudan
+  "212": {min: 9, max: 9}, // Morocco
+  "213": {min: 8, max: 9}, // Algeria
+  "216": {min: 8, max: 8}, // Tunisia
+  "218": {min: 8, max: 9}, // Libya
+  "220": {min: 7, max: 7}, // Gambia
+  "221": {min: 9, max: 9}, // Senegal
+  "222": {min: 7, max: 7}, // Mauritania
+  "223": {min: 8, max: 8}, // Mali
+  "224": {min: 8, max: 8}, // Guinea
+  "225": {min: 8, max: 8}, // Côte d'Ivoire
+  "226": {min: 8, max: 8}, // Burkina Faso
+  "227": {min: 8, max: 8}, // Niger
+  "228": {min: 8, max: 8}, // Togo
+  "229": {min: 8, max: 8}, // Benin
+  "230": {min: 7, max: 7}, // Mauritius
+  "231": {min: 7, max: 8}, // Liberia
+  "232": {min: 8, max: 8}, // Sierra Leone
+  "233": {min: 5, max: 9}, // Ghana
+  "234": {min: 7, max: 10}, // Nigeria
+  "235": {min: 8, max: 8}, // Chad
+  "236": {min: 8, max: 8}, // Central African Republic
+  "237": {min: 8, max: 8}, // Cameroon
+  "238": {min: 7, max: 7}, // Cape Verde
+  "239": {min: 7, max: 7}, // São Tomé and Príncipe
+  "240": {min: 9, max: 9}, // Equatorial Guinea
+  "241": {min: 6, max: 7}, // Gabon
+  "242": {min: 9, max: 9}, // Congo, Republic of the Congo
+  "243": {min: 5, max: 9}, // Democratic Republic of the Congo
+  "244": {min: 9, max: 9}, // Angola
+  "245": {min: 7, max: 7}, // Guinea-Bissau
+  "246": {min: 7, max: 7}, // Diego Garcia
+  "247": {min: 4, max: 4}, // Saint Helena
+  "248": {min: 7, max: 7}, // Seychelles
+  "249": {min: 9, max: 9}, // Sudan
+  "250": {min: 9, max: 9}, // Rwanda
+  "251": {min: 9, max: 9}, // Ethiopia
+  "252": {min: 5, max: 8}, // Somalia
+  "253": {min: 6, max: 6}, // Djibouti
+  "254": {min: 6, max: 10}, // Kenya
+  "255": {min: 9, max: 9}, // Tanzania
+  "256": {min: 9, max: 9}, // Uganda
+  "257": {min: 8, max: 8}, // Burundi
+  "258": {min: 8, max: 9}, // Mozambique
+  "260": {min: 9, max: 9}, // Zambia
+  "261": {min: 9, max: 10}, // Madagascar
+  "263": {min: 5, max: 10}, // Zimbabwe
+  "264": {min: 6, max: 10}, // Namibia
+  "265": {min: 7, max: 8}, // Malawi
+  "266": {min: 8, max: 8}, // Lesotho
+  "267": {min: 7, max: 8}, // Botswana
+  "268": {min: 7, max: 8}, // Swaziland
+  "269": {min: 7, max: 7}, // Comoros
+  "291": {min: 7, max: 7}, // Eritrea
+  "297": {min: 7, max: 7}, // Aruba
+  "298": {min: 6, max: 6}, // Faroe Islands
+  "299": {min: 6, max: 6}, // Greenland
+  "350": {min: 8, max: 8}, // Gibraltar
+  "351": {min: 9, max: 11}, // Portugal
+  "352": {min: 4, max: 11}, // Luxembourg
+  "353": {min: 7, max: 11}, // Ireland
+  "354": {min: 7, max: 9}, // Iceland
+  "355": {min: 3, max: 9}, // Albania
+  "356": {min: 8, max: 8}, // Malta
+  "357": {min: 8, max: 11}, // Cyprus
+  "358": {min: 5, max: 12}, // Finland
+  "359": {min: 7, max: 9}, // Bulgaria
+  "370": {min: 8, max: 8}, // Lithuania
+  "371": {min: 7, max: 8}, // Latvia
+  "372": {min: 7, max: 10}, // Estonia
+  "373": {min: 8, max: 8}, // Moldova
+  "374": {min: 8, max: 8}, // Armenia
+  "375": {min: 9, max: 10}, // Belarus
+  "376": {min: 6, max: 9}, // Andorra
+  "377": {min: 5, max: 9}, // Monaco
+  "378": {min: 6, max: 10}, // San Marino
+  "380": {min: 9, max: 9}, // Ukraine
+  "381": {min: 4, max: 12}, // Serbia
+  "382": {min: 4, max: 12}, // Montenegro
+  "385": {min: 8, max: 12}, // Croatia
+  "386": {min: 8, max: 8}, // Slovenia
+  "387": {min: 8, max: 8}, // Bosnia and Herzegovina
+  "389": {min: 8, max: 8}, // North Macedonia
+  "420": {min: 4, max: 12}, // Czech Republic
+  "421": {min: 4, max: 9}, // Slovakia
+  "423": {min: 7, max: 9}, // Liechtenstein
+  "500": {min: 5, max: 5}, // Falkland Islands
+  "501": {min: 7, max: 7}, // Belize
+  "502": {min: 8, max: 8}, // Guatemala
+  "503": {min: 7, max: 11}, // El Salvador
+  "504": {min: 8, max: 8}, // Honduras
+  "505": {min: 8, max: 8}, // Nicaragua
+  "506": {min: 8, max: 8}, // Costa Rica
+  "507": {min: 7, max: 8}, // Panama
+  "508": {min: 6, max: 6}, // Saint Pierre and Miquelon
+  "509": {min: 8, max: 8}, // Haiti
+  "590": {min: 9, max: 9}, // Guadeloupe
+  "591": {min: 8, max: 8}, // Bolivia
+  "592": {min: 7, max: 7}, // Guyana
+  "593": {min: 8, max: 8}, // Ecuador
+  "594": {min: 9, max: 9}, // French Guiana
+  "595": {min: 5, max: 9}, // Paraguay
+  "596": {min: 9, max: 9}, // Martinique
+  "597": {min: 6, max: 7}, // Suriname
+  "598": {min: 4, max: 11}, // Uruguay
+  "599": {min: 7, max: 8}, // Bonaire, Sint Eustatius and Saba, Curaçao
+  "670": {min: 7, max: 7}, // Timor-Leste
+  "672": {min: 6, max: 6}, // Australian External Territories
+  "673": {min: 7, max: 7}, // Brunei
+  "674": {min: 4, max: 7}, // Nauru
+  "675": {min: 4, max: 11}, // Papua New Guinea
+  "676": {min: 5, max: 7}, // Tonga
+  "677": {min: 5, max: 5}, // Solomon Islands
+  "678": {min: 5, max: 7}, // Vanuatu
+  "679": {min: 7, max: 7}, // Fiji
+  "680": {min: 7, max: 7}, // Palau
+  "681": {min: 6, max: 6}, // Wallis and Futuna
+  "682": {min: 5, max: 5}, // Cook Islands
+  "683": {min: 4, max: 4}, // Niue
+  "685": {min: 3, max: 7}, // Samoa
+  "686": {min: 5, max: 5}, // Kiribati
+  "687": {min: 6, max: 6}, // New Caledonia
+  "688": {min: 5, max: 6}, // Tuvalu
+  "689": {min: 6, max: 6}, // French Polynesia
+  "690": {min: 4, max: 4}, // Tokelau
+  "691": {min: 7, max: 7}, // Micronesia
+  "692": {min: 7, max: 7}, // Marshall Islands
+  "850": {min: 6, max: 17}, // Democratic People's Republic of Korea
+  "852": {min: 4, max: 9}, // Hong Kong
+  "853": {min: 7, max: 8}, // Macao
+  "855": {min: 8, max: 8}, // Cambodia
+  "856": {min: 8, max: 10}, // Laos
+  "880": {min: 6, max: 10}, // Bangladesh
+  "886": {min: 8, max: 9}, // Taiwan
+  "960": {min: 7, max: 7}, // Maldives
+  "961": {min: 7, max: 8}, // Lebanon
+  "962": {min: 5, max: 9}, // Jordan
+  "963": {min: 8, max: 10}, // Syria
+  "964": {min: 8, max: 10}, // Iraq
+  "965": {min: 7, max: 8}, // Kuwait
+  "966": {min: 8, max: 9}, // Saudi Arabia
+  "967": {min: 6, max: 9}, // Yemen
+  "968": {min: 7, max: 8}, // Oman
+  "971": {min: 8, max: 9}, // United Arab Emirates
+  "972": {min: 8, max: 9}, // Israel
+  "973": {min: 8, max: 8}, // Bahrain
+  "974": {min: 3, max: 8}, // Qatar
+  "975": {min: 7, max: 8}, // Bhutan
+  "976": {min: 7, max: 8}, // Mongolia
+  "977": {min: 8, max: 9}, // Nepal
+  "992": {min: 9, max: 9}, // Tajikistan
+  "993": {min: 8, max: 8}, // Turkmenistan
+  "994": {min: 8, max: 9}, // Azerbaijan
+  "995": {min: 9, max: 9}, // Georgia
+  "996": {min: 9, max: 9}, // Kyrgyzstan
+  "998": {min: 9, max: 9}, // Uzbekistan
+};
 
-  return { url, title, emails, phones, text: text.slice(0, 1000), links };
+// Build list of known country codes for quick match (1-3 digits)
+const knownCountryCodes = Object.keys(countryRules).sort((a,b) => b.length - a.length);
+
+// ---------------------------
+// PHONE NORMALIZATION & VALIDATION
+// ---------------------------
+function cleanNumber(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  // remove common extension markers (keep them out)
+  raw = raw.split(/ext|extension|x|#|ext\./i)[0];
+  // remove "tel:" and spaces/dots/dashes/parentheses
+  raw = raw.replace(/^tel:/i, '').trim();
+  raw = raw.replace(/[()\s.\-]+/g, '');
+  // convert leading 00 to +
+  if (raw.startsWith('00')) raw = '+' + raw.slice(2);
+  if (raw.startsWith('+')) return '+' + raw.slice(1).replace(/\D/g, '');
+  // if it starts with digits and length looks like international with leading country code
+  if (/^\d+$/.test(raw)) return raw; // we'll try to interpret later
+  // fallback: remove non-digit but preserve leading +
+  return raw.replace(/[^\d+]/g, '');
 }
 
-async function crawlSite(startUrl, depth, visited = new Set()) {
-  if (depth <= 0 || visited.has(startUrl)) return [];
-  visited.add(startUrl);
-
-  try {
-    const pageData = await fetchPage(startUrl);
-    const childResults = [];
-
-    if (depth > 1) {
-      const sameDomainLinks = pageData.links.filter(link => link.startsWith(new URL(startUrl).origin));
-      for (const link of sameDomainLinks.slice(0, 10)) {
-        const children = await crawlSite(link, depth - 1, visited);
-        childResults.push(...children);
+function normalizeToE164(raw, defaultCountryCode=null) {
+  let cleaned = cleanNumber(raw);
+  if (!cleaned) return null;
+  // If already starts with +, check length and return
+  if (cleaned.startsWith('+')) {
+    const digits = cleaned.slice(1);
+    if (digits.length > 0 && digits.length <= 15 && /^\d+$/.test(digits)) {
+      // optional country-specific check
+      const cc = detectCountryCode(digits);
+      if (!cc) return '+' + digits; // fallback accept
+      const national = digits.slice(cc.length);
+      const rule = countryRules[cc];
+      if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
+        return '+' + digits;
+      } else {
+        // still return if within E.164 total length
+        if (digits.length <= 15) return '+' + digits;
+        return null;
       }
     }
-
-    return [pageData, ...childResults];
-  } catch {
-    return [];
+    return null;
   }
+
+  // If not starting with +, try 00 replaced earlier; then try detect country code from start
+  let digits = cleaned;
+  if (!/^\d+$/.test(digits)) return null;
+
+  // Try to find a 1-3 digit country code by testing known codes
+  for (const cc of knownCountryCodes) {
+    if (digits.startsWith(cc)) {
+      const national = digits.slice(cc.length);
+      const rule = countryRules[cc];
+      if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
+        return '+' + cc + national;
+      } else {
+        // Not match rule but still might be valid under E.164
+        if ((cc + national).length <= 15) return '+' + cc + national;
+      }
+    }
+  }
+
+  // as fallback: if defaultCountryCode provided, use it
+  if (defaultCountryCode) {
+    const dd = defaultCountryCode.replace(/^\+/, '');
+    const national = digits;
+    const rule = countryRules[dd];
+    if (!rule || (national.length >= rule.min && national.length <= rule.max)) {
+      return '+' + dd + national;
+    } else if ((dd + national).length <= 15) {
+      return '+' + dd + national;
+    }
+  }
+
+  // last fallback: if digits length between 8 and 15, assume E.164 without leading plus is missing country code -> reject
+  if (digits.length >= 8 && digits.length <= 15) {
+    return null; // we refuse ambiguous numbers without explicit country code
+  }
+
+  return null;
 }
 
-app.post("/crawl", async (req, res) => {
-  const { url, depth = 1 } = req.body;
-  if (!url) return res.status(400).json({ error: "Missing URL" });
+function detectCountryCode(digits) {
+  // digits: string of digits (no plus)
+  for (const cc of knownCountryCodes) {
+    if (digits.startsWith(cc)) return cc;
+  }
+  return null;
+}
 
-  const results = await crawlSite(url, depth);
-  res.json({ results });
+// ---------------------------
+// CRAWLER LOGIC
+// ---------------------------
+async function fetchPage(url) {
+  const { data } = await axios.get(url, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (crawler)' } });
+  const $ = cheerio.load(data);
+  const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+  const title = ($('title').text() || '').trim();
+  const metaDesc = ($('meta[name="description"]').attr('content') || '').trim();
+
+  // Raw emails using regex on the entire HTML and visible text
+  const html = $.html();
+  const emailsInHtml = [...new Set((html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).map(e => e.toLowerCase()))];
+
+  // Phone candidate extraction from text and tel: links
+  // capture tel: URIs
+  const telLinks = $('a[href^="tel:"]').map((i, a) => $(a).attr('href').replace(/^tel:/i, '')).get();
+  // fuzzy phone matches in visible text
+  const fuzzyPhones = Array.from(new Set((bodyText.match(/(\+?\d[\d\-\s().]{6,}\d)/g) || []).map(s => s.trim())));
+  const phoneCandidates = [...new Set([...telLinks, ...fuzzyPhones])];
+
+  // Links: absolute URLs for same-origin detection outside
+  const links = $('a[href]').map((i, el) => {
+    const href = $(el).attr('href');
+    try {
+      return new URL(href, url).href;
+    } catch (e) {
+      return null;
+    }
+  }).get().filter(Boolean);
+
+  // Keep first visible text snippet (for context)
+  const snippet = bodyText.slice(0, 1200);
+
+  return {
+    url,
+    title,
+    metaDescription: metaDesc,
+    emails: emailsInHtml,
+    phoneCandidates,
+    snippet,
+    links
+  };
+}
+
+// Crawl same-domain pages up to maxPages
+async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode = null) {
+  const origin = new URL(startUrl).origin;
+  const visited = new Set();
+  const results = [];
+
+  const toVisit = [startUrl];
+  while (toVisit.length > 0 && visited.size < maxPages) {
+    const u = toVisit.shift();
+    if (!u || visited.has(u)) continue;
+    try {
+      const page = await fetchPage(u);
+      // Normalize phones
+      const normalizedPhones = [];
+      for (const p of page.phoneCandidates) {
+        const norm = normalizeToE164(p, defaultCountryCode);
+        if (norm) normalizedPhones.push(norm);
+      }
+      // Dedup normalized phones
+      const uniquePhones = [...new Set(normalizedPhones)];
+
+      results.push({
+        url: page.url,
+        title: page.title,
+        metaDescription: page.metaDescription,
+        emails: page.emails,
+        phones: uniquePhones,
+        snippet: page.snippet,
+        links: page.links
+      });
+
+      visited.add(u);
+
+      // If depth > 1, and we haven't exceeded maxPages, enqueue same-origin links
+      if (depth > 1) {
+        const sameOriginLinks = page.links.filter(l => {
+          try { return new URL(l).origin === origin; } catch { return false; }
+        });
+        for (const l of sameOriginLinks) {
+          if (!visited.has(l) && toVisit.length + visited.size < maxPages) {
+            toVisit.push(l);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Fetch failed for ${u}: ${err.message}`);
+      visited.add(u);
+    }
+  }
+  return results;
+}
+
+// ---------------------------
+// CSV helper (columns)
+// ---------------------------
+function toCSV(rows) {
+  // columns: url,title,metaDescription,emails,phones,snippet,links
+  const header = ['url','title','metaDescription','emails','phones','snippet','links'];
+  const lines = [header.join(',')];
+  for (const r of rows) {
+    const emails = (r.emails || []).join(' | ').replace(/"/g,"\"");
+    const phones = (r.phones || []).join(' | ').replace(/"/g,"\"");
+    const snippet = (r.snippet || '').replace(/\n/g,' ').replace(/"/g,'\"');
+    const links = (r.links || []).join(' | ').replace(/"/g,'\"');
+    const row = [
+      `"${r.url.replace(/"/g,'\"')}"`,
+      `"${(r.title||'').replace(/"/g,'\"')}"`,
+      `"${(r.metaDescription||'').replace(/"/g,'\"')}"`,
+      `"${emails}"`,
+      `"${phones}"`,
+      `"${snippet}"`,
+      `"${links}"`
+    ].join(',');
+    lines.push(row);
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------
+// API endpoint
+// ---------------------------
+app.post('/crawl', async (req, res) => {
+  try {
+    const { url, depth = 1, maxPages = 10, format = 'json', defaultCountryCode = null } = req.body;
+    if (!url) return res.status(400).json({ error: 'url required' });
+    const numericDepth = parseInt(depth) || 1;
+    const numericMax = Math.min(100, Math.max(1, parseInt(maxPages) || 10)); // safety limits
+
+    const results = await crawlSite(url, numericDepth, numericMax, defaultCountryCode);
+
+    if (format === 'csv') {
+      const csv = toCSV(results);
+      res.setHeader('Content-Type', 'text/csv');
+      res.send(csv);
+    } else {
+      res.json({ results });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.listen(10000, () => console.log("Crawler running on port 10000"));
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`✅ Crawler running on port ${port}`));
