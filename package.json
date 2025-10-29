@@ -1,15 +1,29 @@
+# 1 — make sure repo is up to date
+git checkout main
+git pull origin main
+
+# 2 — confirm server.cjs exists
+ls -la
+
+# 3 — Overwrite package.json with the correct start script
+cat > package.json <<'JSON'
 {
   "name": "link-crawler-api",
   "version": "1.0.0",
-  "type": "module",
-  "description": "A free multi-link crawler that extracts emails and phone numbers",
-  "main": "server.js",
+  "description": "Multi-link crawler with CSV columns for emails & phones",
+  "main": "server.cjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.cjs"
   },
   "dependencies": {
     "axios": "^1.7.4",
     "cheerio": "^1.0.0-rc.12",
-    "express": "^4.19.2"
+    "express": "^4.18.2"
   }
 }
+JSON
+
+# 4 — commit & push
+git add package.json
+git commit -m "Fix start script to run server.cjs"
+git push origin main
