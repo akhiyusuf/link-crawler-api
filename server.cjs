@@ -289,7 +289,7 @@ async function fetchPage(url) {
   }).get().filter(Boolean);
 
   const fullText = bodyText;
-  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, snippet, links };
+  return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, fullText, links };
 }
 
 // --- crawl logic with depth and maxPages ---
@@ -317,7 +317,7 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
         metaDescription: page.metaDescription,
         emails: page.emails,
         phones: uniquePhones,
-        snippet: page.snippet,
+        fullText: page.fullText,
         links: page.links,
         url: u,
         error: err.message
@@ -347,7 +347,7 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
   const header = ['url','title','metaDescription'];
   for (let i=1;i<=emailCols;i++) header.push(`email_${i}`);
   for (let i=1;i<=phoneCols;i++) header.push(`phone_${i}`);
-  header.push('snippet');
+  header.push('fullText');
   for (let i=1;i<=3;i++) header.push(`link_${i}`); // keep first 3 links in columns (others remain in JSON if needed)
   const out = [header.join(',')];
 
@@ -363,7 +363,7 @@ function toCSV(rows, emailCols = 5, phoneCols = 5) {
     const phones = r.phones || [];
     for (let i=0;i<phoneCols;i++) row.push(`"${(phones[i]||'') .replace(/"/g,'""')}"`);
 
-    row.push(`"${(r.snippet||'').replace(/"/g,'""')}"`);
+    row.push(`"${(r.fullText||'').replace(/"/g,'""')}"`);
 
     const links = r.links || [];
     for (let i=0;i<3;i++) row.push(`"${(links[i]||'').replace(/"/g,'""')}"`);
