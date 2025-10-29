@@ -288,7 +288,7 @@ async function fetchPage(url) {
     try { return new URL(href, url).href; } catch(e) { return null; }
   }).get().filter(Boolean);
 
-  const snippet = bodyText.slice(0,1200);
+  const fullText = bodyText;
   return { url, title, metaDescription: meta, emails: emailsInHtml, phoneCandidates, snippet, links };
 }
 
