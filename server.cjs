@@ -318,8 +318,11 @@ async function crawlSite(startUrl, depth = 1, maxPages = 10, defaultCountryCode 
         emails: page.emails,
         phones: uniquePhones,
         snippet: page.snippet,
-        links: page.links
+        links: page.links,
+        url: u,
+        error: err.message
       });
+
 
       visited.add(u);
 
@@ -398,5 +401,3 @@ app.post('/crawl', async (req, res) => {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Crawler running on port ${port}`));
-
-results.push({ url: u, error: err.message });
